@@ -11,7 +11,8 @@ them consumer-side; ``tap_cares`` owns only the secrets *mechanics*
 
 - ``aws_static_access_key`` — a session bound directly to static credentials
   (our own account).
-- ``aws_assumed_role`` — cross-account: a *base* session (static credentials)
+- ``aws_assumed_role`` — cross-account: a *base* session (static credentials, or
+  ``{"source": "ambient"}`` for the compute's own role, such as an ECS task role)
   calls STS ``AssumeRole`` with a **mandatory** External ID, and the returned
   short-lived credentials back the working session. This is how the collector
   reaches a running service in an AWS account we do not own.
@@ -66,6 +67,7 @@ from .selection import ACCOUNT_REFERENCE_PATTERN, TYPE_PATTERN, SelectionError, 
 AWS_SECRET_REF = SecretRef(scope="aws_core", key="boto_collector")
 AWS_SECRET_KIND = "aws_static_access_key"
 AWS_ASSUMED_ROLE_KIND = "aws_assumed_role"
+AMBIENT_BASE_SOURCE = "ambient"
 
 # Region scope is shared by both kinds; kept as one fragment so the two schemas
 # cannot drift.
@@ -141,11 +143,24 @@ AWS_ASSUMED_ROLE_SCHEMA: dict[str, Any] = {
         # region scope (a commercial role ARN with GovCloud regions cannot work).
         "role_arn": {"type": "string", "pattern": rf"^arn:{PARTITION_RE}:iam::[0-9]{{12}}:role/.+$"},
         "external_id": {"type": "string", "minLength": 1},
+        # Static keys, or {"source": "ambient"}: the default credential chain of the compute the
+        # collector runs on (an ECS task role, an instance profile). Ambient is opt-in by name so
+        # a missing `base` never silently falls back to whatever credentials the host has.
         "base": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["access_key_id", "secret_access_key"],
-            "properties": dict(_STATIC_CREDS_PROPS),
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["access_key_id", "secret_access_key"],
+                    "properties": dict(_STATIC_CREDS_PROPS),
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["source"],
+                    "properties": {"source": {"const": AMBIENT_BASE_SOURCE}},
+                },
+            ],
         },
         **_EXPECTED_ACCOUNT_PROPS,
         # STS RoleSessionName grammar: [\w+=,.@-]{2,64}.
@@ -381,15 +396,24 @@ def _botocore_session(use_fips_endpoint: bool | None) -> botocore.session.Sessio
     return session
 
 
+def uses_ambient_base(data: Mapping[str, Any]) -> bool:
+    """True when an ``aws_assumed_role`` secret calls AssumeRole from the ambient credential chain."""
+    base = data.get("base")
+    return isinstance(base, Mapping) and base.get("source") == AMBIENT_BASE_SOURCE
+
+
 def build_session(creds: Mapping[str, Any]) -> boto3.session.Session:
-    """A boto3 Session bound to a static credential set.
+    """A boto3 Session bound to a static credential set, or to the ambient chain.
 
     ``creds`` is the ``aws_static_access_key`` kind's ``data`` (our own account) or, for the
     ``aws_assumed_role`` kind's calling identity, the result of :func:`base_creds` — never
-    ``data['base']`` directly, which carries no ``use_fips_endpoint`` of its own. Both carry
-    ``access_key_id`` / ``secret_access_key`` / optional ``session_token`` /
-    ``use_fips_endpoint``.
+    ``data['base']`` directly, which carries no ``use_fips_endpoint`` of its own. Static creds
+    carry ``access_key_id`` / ``secret_access_key`` / optional ``session_token`` /
+    ``use_fips_endpoint``. ``{"source": "ambient"}`` leaves the keys to botocore's default
+    chain (on Fargate, the task role from the container credentials endpoint).
     """
+    if creds.get("source") == AMBIENT_BASE_SOURCE:
+        return boto3.session.Session(botocore_session=_botocore_session(creds.get("use_fips_endpoint")))
     return boto3.session.Session(
         aws_access_key_id=creds["access_key_id"],
         aws_secret_access_key=creds["secret_access_key"],

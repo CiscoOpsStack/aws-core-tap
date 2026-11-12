@@ -127,10 +127,11 @@ The `aws_assumed_role` secret kind carries:
 - `kind`: `aws_assumed_role`
 - `data.role_arn` — required; the role in the **target** account to assume
 - `data.external_id` — required; the confused-deputy guard (see `-2`)
-- `data.base` — required (this increment); the base identity used to *call*
-  `AssumeRole`: `{ access_key_id, secret_access_key, session_token? }`. A
-  keyless/ambient base (instance/task role, web-identity) is a declared future
-  branch, deferred until the collector runs on AWS compute.
+- `data.base` — required; the base identity used to *call* `AssumeRole`: either
+  `{ access_key_id, secret_access_key, session_token? }`, or `{ "source": "ambient" }`
+  for botocore's default credential chain when the collector runs on AWS compute
+  (an ECS task role, an instance profile). Ambient must be named; there is no
+  implicit fallback (`-8`).
 - optional `data.expected_account_id` — if set, the collector asserts the
   post-assume `GetCallerIdentity` account equals it and fails visibly on
   mismatch (wrong-role catch; see `-4`)
@@ -181,10 +182,11 @@ account id + region(s), which populate the `aws_assumed_role` secret.
 | --- | --- | :---: | --- | --- |
 | req-aws-core-secret-aws-assumed-role-1 | Assume-Role Mode | Proposed | The `aws_assumed_role` kind assumes a target-account role via STS and collects with the returned short-lived credentials. | Coexists with `aws_static_access_key`; additive. |
 | req-aws-core-secret-aws-assumed-role-2 | External ID Mandatory | Proposed | `data.external_id` is required for this kind; a secret lacking it fails validation and the run never calls `AssumeRole` without the confused-deputy guard. | Cheap foundational security edge; stricter than a generic optional external id. |
-| req-aws-core-secret-aws-assumed-role-3 | Explicit Base Identity | Proposed | This increment requires a static `data.base` credential set to call `AssumeRole`; keyless/ambient base is a declared future branch. | Validated consumer-side; keeps the base identity legible, not implicit. |
+| req-aws-core-secret-aws-assumed-role-3 | Explicit Base Identity | Proposed | `data.base` is required and names the identity that calls `AssumeRole`: a static credential set, or `{"source": "ambient"}` (see `-8`). An empty or unknown base fails validation. | Validated consumer-side; keeps the base identity legible, not implicit. |
 | req-aws-core-secret-aws-assumed-role-4 | Assert-On-Land | Proposed | If `data.expected_account_id` is set, the post-assume `GetCallerIdentity` account must equal it or the run fails visibly. | Reuses the existing STS probe; catches a misconfigured/misrouted role. |
 | req-aws-core-secret-aws-assumed-role-5 | Session-Name Legibility | Proposed | The `RoleSessionName` carries a run-identifying value into the target account's CloudTrail. | AI/audit legibility on the partner side; partner can trace every call to a run. |
 | req-aws-core-secret-aws-assumed-role-6 | Audited Assume | Proposed | The `AssumeRole` call is captured by the per-run audit ledger. | Ledger attaches to the base session before the STS call. |
+| req-aws-core-secret-aws-assumed-role-8 | Ambient Base Opt-In | Proposed | `data.base = {"source": "ambient"}` calls `AssumeRole` from botocore's default credential chain (an ECS task role or instance profile), so no long-lived key is stored. It must be named; an absent base never falls back to ambient. FIPS and region handling are the same as a static base. | For collectors running on AWS compute, such as TAP on ECS Fargate. |
 | req-aws-core-secret-aws-assumed-role-7 | Least-Privilege Grant Artifact | Proposed | The committed handoff artifacts request AWS-managed `SecurityAudit` (read-only config) and a trust policy naming a specific collector principal + the External ID; broader `ReadOnlyAccess` is opt-in, named where used. | Honest-risk: names what is deliberately granted vs. left out. |
 
 #### Lineage

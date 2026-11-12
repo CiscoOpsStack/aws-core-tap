@@ -73,6 +73,50 @@ def test_resolve_rejects_assumed_role_missing_base(monkeypatch):
         cred.resolve_aws_secret()
 
 
+def test_resolve_accepts_ambient_base(monkeypatch):
+    # req-aws-core-secret-aws-assumed-role-8: {"source": "ambient"} is the opt-in keyless base.
+    data = {**_VALID_ASSUMED, "base": {"source": "ambient"}}
+    monkeypatch.setattr(cred, "resolve_secret", lambda _ref: _secret(cred.AWS_ASSUMED_ROLE_KIND, data))
+    secret = cred.resolve_aws_secret()
+    assert cred.uses_ambient_base(secret.data)
+
+
+@pytest.mark.parametrize(
+    "base",
+    [
+        {},
+        {"source": "instance"},
+        {"source": "ambient", "access_key_id": "AKIA", "secret_access_key": "shh"},
+    ],
+)
+def test_resolve_rejects_malformed_base(monkeypatch, base):
+    # Only static keys or exactly {"source": "ambient"}: no empty base, no other sources, no mix.
+    data = {**_VALID_ASSUMED, "base": base}
+    monkeypatch.setattr(cred, "resolve_secret", lambda _ref: _secret(cred.AWS_ASSUMED_ROLE_KIND, data))
+    with pytest.raises(SecretValidationError):
+        cred.resolve_aws_secret()
+
+
+def test_static_base_is_not_ambient():
+    assert not cred.uses_ambient_base(_VALID_ASSUMED)
+    assert not cred.uses_ambient_base({"access_key_id": "a"})
+
+
+def test_ambient_build_session_uses_the_default_chain(monkeypatch):
+    # The session holds no keys of its own; botocore resolves them (env here, the task role on ECS).
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAAMBIENT")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "ambient-secret")
+    monkeypatch.delenv("AWS_SESSION_TOKEN", raising=False)
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    data = {**_VALID_ASSUMED, "base": {"source": "ambient"}, "use_fips_endpoint": True}
+
+    session = cred.build_session(cred.base_creds(data))
+
+    creds = session.get_credentials()
+    assert creds is not None and creds.access_key == "AKIAAMBIENT"
+    assert session._session.get_config_variable("use_fips_endpoint") is True
+
+
 def test_resolve_rejects_unsupported_kind(monkeypatch):
     monkeypatch.setattr(cred, "resolve_secret", lambda _ref: _secret("aws_wat", dict(_BASE)))
     with pytest.raises(SecretValidationError):
