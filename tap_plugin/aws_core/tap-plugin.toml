@@ -1164,6 +1164,8 @@ dimension = "grift/dimension.grift.json"
 regions = "grift/regions.grift.json"
 # The reusable /aws pages (req-aws-core-page-dashboard): read whatever AWS nodes the grid holds.
 pages = "grift/pages.grift.json"
+# One daily collection run. Without a Schedule the boto3 collector never fires on its own.
+schedule = "grift/schedule.grift.json"
 
 [[boot.records]]
 name = "ci"
